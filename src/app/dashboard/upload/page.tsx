@@ -1,12 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 export default function UploadTenderPage() {
-  const router = useRouter();
-
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [status, setStatus] = useState("");
@@ -33,8 +30,18 @@ export default function UploadTenderPage() {
         error: userError,
       } = await supabase.auth.getUser();
 
-      if (userError || !user) {
-        setStatus("You must be logged in to upload a tender.");
+      console.log("AUTH USER ERROR:", userError);
+      console.log("CURRENT USER:", user);
+      console.log("USER ID BEING USED:", user?.id);
+
+      if (userError) {
+        setStatus(`Auth error: ${userError.message}`);
+        setUploading(false);
+        return;
+      }
+
+      if (!user) {
+        setStatus("No logged-in user found. Please log in again.");
         setUploading(false);
         return;
       }
@@ -43,33 +50,51 @@ export default function UploadTenderPage() {
       const safeFileName = file.name.replace(/\s+/g, "_");
       const filePath = `${user.id}/${Date.now()}_${safeFileName}`;
 
+      console.log("FILE PATH:", filePath);
+
       // Upload file to Supabase Storage
-      const { error: uploadError } = await supabase.storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
         .from("tenders")
-        .upload(filePath, file);
+        .upload(filePath, file, {
+          upsert: false,
+        });
+
+      console.log("STORAGE UPLOAD DATA:", uploadData);
+      console.log("STORAGE UPLOAD ERROR:", uploadError);
 
       if (uploadError) {
-        setStatus(`Upload failed: ${uploadError.message}`);
+        setStatus(`Storage upload failed: ${uploadError.message}`);
         setUploading(false);
         return;
       }
 
-      // Get public URL (works only if bucket is public)
-      // For private buckets, this may be blank for now and that's okay.
+      // Public URL (fine for public bucket; if private, this may not be usable later)
       const { data: publicUrlData } = supabase.storage
         .from("tenders")
         .getPublicUrl(filePath);
 
       const fileUrl = publicUrlData?.publicUrl ?? null;
 
+      console.log("PUBLIC URL:", fileUrl);
+
       // Save tender record in DB
-      const { error: insertError } = await supabase.from("tenders").insert({
+      const tenderPayload = {
         user_id: user.id,
         file_name: file.name,
         file_path: filePath,
         file_url: fileUrl,
         status: "uploaded",
-      });
+      };
+
+      console.log("INSERT PAYLOAD:", tenderPayload);
+
+      const { data: insertData, error: insertError } = await supabase
+        .from("tenders")
+        .insert(tenderPayload)
+        .select();
+
+      console.log("DB INSERT DATA:", insertData);
+      console.log("DB INSERT ERROR:", insertError);
 
       if (insertError) {
         setStatus(`Database save failed: ${insertError.message}`);
@@ -79,11 +104,8 @@ export default function UploadTenderPage() {
 
       setStatus("Tender uploaded successfully ✅");
       setFile(null);
-
-      // Optional: redirect later
-      // router.push("/dashboard");
     } catch (error) {
-      console.error(error);
+      console.error("UNEXPECTED UPLOAD ERROR:", error);
       setStatus("Something went wrong during upload.");
     } finally {
       setUploading(false);
@@ -113,6 +135,7 @@ export default function UploadTenderPage() {
           accept="application/pdf"
           onChange={(e) => {
             const selectedFile = e.target.files?.[0] ?? null;
+            console.log("SELECTED FILE:", selectedFile);
             setFile(selectedFile);
           }}
         />
