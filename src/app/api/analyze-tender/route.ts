@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import OpenAI from "openai";
-import pdfParse from "pdf-parse";
+import * as pdfjsLib from "pdfjs-dist";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 1. Get tender record
+    // 1. Get tender record from DB
     const { data: tender, error: tenderError } = await supabaseAdmin
       .from("tenders")
       .select("*")
@@ -35,7 +35,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // 2. Download PDF from storage
+    // 2. Download PDF from Supabase Storage
     const { data: fileData, error: storageError } = await supabaseAdmin.storage
       .from("tenders")
       .download(tender.file_path);
@@ -47,12 +47,25 @@ export async function POST(req: Request) {
       );
     }
 
-    // 3. Convert file to buffer and extract PDF text
+    // 3. Extract text from PDF
     const arrayBuffer = await fileData.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
 
-    const pdfData = await pdfParse(buffer);
-    const extractedText = pdfData.text?.trim() || "";
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    let extractedText = "";
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+
+      const pageText = content.items
+        .map((item: any) => ("str" in item ? item.str : ""))
+        .join(" ");
+
+      extractedText += pageText + "\n";
+    }
+
+    extractedText = extractedText.trim();
 
     if (!extractedText) {
       return NextResponse.json(
@@ -61,10 +74,10 @@ export async function POST(req: Request) {
       );
     }
 
-    // Trim text for MVP cost/speed control
+    // Limit prompt size for MVP cost/speed control
     const trimmedText = extractedText.slice(0, 15000);
 
-    // 4. Ask OpenAI for structured summary
+    // 4. Ask OpenAI for structured tender analysis
     const completion = await openai.chat.completions.create({
       model: "gpt-4.1-mini",
       temperature: 0.2,
@@ -105,7 +118,17 @@ Rules:
 
     const content = completion.choices[0]?.message?.content || "{}";
 
-    let parsed;
+    let parsed: {
+      tender_title?: string;
+      issuing_body?: string;
+      deadline?: string;
+      scope_summary?: string;
+      evaluation_criteria?: string;
+      required_sections?: string[];
+      required_documents?: string[];
+      missing_info?: string[];
+    };
+
     try {
       parsed = JSON.parse(content);
     } catch {
@@ -115,7 +138,7 @@ Rules:
       );
     }
 
-    // 5. Save results back to tenders table
+    // 5. Save analysis back to DB
     const { error: updateError } = await supabaseAdmin
       .from("tenders")
       .update({
