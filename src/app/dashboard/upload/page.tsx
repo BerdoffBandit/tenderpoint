@@ -24,7 +24,7 @@ export default function UploadTenderPage() {
 
       setUploading(true);
 
-      // Get logged in user
+      // 1. Get logged in user
       const {
         data: { user },
         error: userError,
@@ -46,13 +46,13 @@ export default function UploadTenderPage() {
         return;
       }
 
-      // Create a unique file path
+      // 2. Create unique file path
       const safeFileName = file.name.replace(/\s+/g, "_");
       const filePath = `${user.id}/${Date.now()}_${safeFileName}`;
 
       console.log("FILE PATH:", filePath);
 
-      // Upload file to Supabase Storage
+      // 3. Upload file to Supabase Storage
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from("tenders")
         .upload(filePath, file, {
@@ -68,7 +68,7 @@ export default function UploadTenderPage() {
         return;
       }
 
-      // Public URL (fine for public bucket; if private, this may not be usable later)
+      // 4. Get public URL (okay for MVP if bucket is public)
       const { data: publicUrlData } = supabase.storage
         .from("tenders")
         .getPublicUrl(filePath);
@@ -77,13 +77,14 @@ export default function UploadTenderPage() {
 
       console.log("PUBLIC URL:", fileUrl);
 
-      // Save tender record in DB
+      // 5. Save tender record in DB
       const tenderPayload = {
         user_id: user.id,
         file_name: file.name,
         file_path: filePath,
         file_url: fileUrl,
         status: "uploaded",
+        analysis_status: "not_started",
       };
 
       console.log("INSERT PAYLOAD:", tenderPayload);
@@ -102,7 +103,40 @@ export default function UploadTenderPage() {
         return;
       }
 
-      setStatus("Tender uploaded successfully ✅");
+      const tenderId = insertData?.[0]?.id;
+
+      if (!tenderId) {
+        setStatus("Tender saved, but tender ID was not returned.");
+        setUploading(false);
+        return;
+      }
+
+      // 6. Trigger tender analysis
+      setStatus("Tender uploaded. Analyzing...");
+
+      const analyzeRes = await fetch("/api/analyze-tender", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ tenderId }),
+      });
+
+      const analyzeData = await analyzeRes.json();
+
+      console.log("ANALYZE RESPONSE:", analyzeData);
+
+      if (!analyzeRes.ok) {
+        setStatus(
+          `Tender uploaded, but analysis failed: ${
+            analyzeData.error || "Unknown error"
+          }`
+        );
+        setUploading(false);
+        return;
+      }
+
+      setStatus("Tender uploaded and analyzed successfully ✅");
       setFile(null);
     } catch (error) {
       console.error("UNEXPECTED UPLOAD ERROR:", error);
